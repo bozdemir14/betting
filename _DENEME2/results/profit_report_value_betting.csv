@@ -1,0 +1,11 @@
+Feature,Value_Bets_Found,Win_Rate_on_Value_Bets,Avg_Odds_Bet,Total_Profit,ROI_%,Avg_Required_Odds_for_Value
+fav_double_chance_home,132,71.97%,1.15,-22.62,-17.14,1.08
+opp_double_chance_home,146,41.78%,1.80,-44.81,-30.69,1.44
+no_draw_home,103,76.70%,1.13,-13.79,-13.39,1.07
+draw_home,313,23.96%,3.76,-58.88,-18.81,2.41
+no_draw_away,73,69.86%,1.14,-14.66,-20.08,1.07
+draw_away,158,25.32%,3.59,-21.97,-13.91,2.21
+fav_double_chance_away,89,76.40%,1.15,-11.25,-12.64,1.08
+opp_double_chance_away,106,45.28%,1.73,-26.99,-25.46,1.41
+fav_win_away,188,51.06%,1.88,-11.04,-5.87,1.46
+fav_win_home,340,54.71%,1.78,-26.63,-7.83,1.39

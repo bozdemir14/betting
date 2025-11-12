@@ -1,8 +1,6 @@
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import OneHotEncoder
-import joblib
+import os
 
 # --- 1. Merge Odds into Feature Matrix ---
 print("Merging features with odds...")
@@ -15,7 +13,6 @@ print("Merged file saved.")
 
 # --- Configuration ---
 DATA_FILE = '/Users/batumbp/Files/betting/_DENEME2/data/fikstur_feature_matrix_with_odds.csv'
-RESULTS_FILE = '/Users/batumbp/Files/betting/_DENEME2/results/model_results.csv'
 
 FEATURE_TO_ODDS_MAPPING = {
     'fav_win_home': '1',
@@ -31,7 +28,6 @@ FEATURE_TO_ODDS_MAPPING = {
 }
 
 # --- 2. Load Data ---
-model_results = pd.read_csv(RESULTS_FILE)
 try:
     df = pd.read_csv(DATA_FILE)
 except FileNotFoundError:
@@ -42,87 +38,77 @@ except FileNotFoundError:
 test_indices = pd.read_csv('/Users/batumbp/Files/betting/_DENEME2/results/test_indices.csv', header=None).squeeze()
 test_df = df.loc[test_indices]
 
-# Load the saved encoder and encode test features
-encoder = joblib.load('/Users/batumbp/Files/betting/_DENEME2/results/encoder.pkl')
-input_cols = ['Favorite_Odds', 'Favorite_Team', 'Lig', 'Season', 'Hafta']
-for col in input_cols:
-    test_df[col] = test_df[col].astype('category')
-X_test_encoded = encoder.transform(test_df[input_cols])
+# Get list of features from predictions directory
+predictions_dir = '/Users/batumbp/Files/betting/_DENEME2/results/predictions'
+all_features = [f.replace('.csv', '') for f in os.listdir(predictions_dir) if f.endswith('.csv')]
 
-all_features = model_results.sort_values('Precision', ascending=False)
 profit_report = []
 
-for _, row in all_features.iterrows():
-    feature = row['Feature']
-    precision = row['Precision']
-
-    # Load the trained model
-    model_path = f'/Users/batumbp/Files/betting/_DENEME2/results/models/{feature.replace("/", "_")}.pkl'
+for feature in all_features:
+    # 1. Load the saved predictions for this feature
     try:
-        model = joblib.load(model_path)
+        preds_df = pd.read_csv(f'/Users/batumbp/Files/betting/_DENEME2/results/predictions/{feature}.csv', index_col=0)
     except FileNotFoundError:
-        continue  # Skip if model not saved
+        continue
 
-    # Predict on test set
-    y_pred = model.predict(X_test_encoded)
-    y_test = test_df[feature]
+    # 2. Merge predictions with the test set containing odds
+    backtest_df = test_df.join(preds_df)
 
+    # 3. Check if odds mapping exists
     if feature in FEATURE_TO_ODDS_MAPPING:
         odds_col = FEATURE_TO_ODDS_MAPPING[feature]
-        if odds_col not in test_df.columns:
-            print(f"Warning: Odds column '{odds_col}' for feature '{feature}' not found. Skipping.")
+        if odds_col not in backtest_df.columns:
+            profit_report.append({
+                'Feature': feature,
+                'Value_Bets_Found': 'N/A (odds column missing)',
+                'Win_Rate_on_Value_Bets': 'N/A',
+                'Avg_Odds_Bet': 'N/A',
+                'Total_Profit': 'N/A',
+                'ROI_%': 'N/A',
+                'Avg_Required_Odds_for_Value': f"{1 / backtest_df['predicted_proba'].mean():.2f}"
+            })
             continue
 
-        # Simulate bets based on predictions
-        bets_indices = y_pred == 1
-        if not bets_indices.any():
-            continue
+        # Convert odds to numeric and drop invalid rows
+        backtest_df['odds'] = pd.to_numeric(backtest_df[odds_col], errors='coerce')
+        backtest_df.dropna(subset=['odds', 'predicted_proba'], inplace=True)
 
-        odds_for_bets = pd.to_numeric(test_df.loc[bets_indices, odds_col], errors='coerce').dropna()
-        if odds_for_bets.empty:
-            continue
+        # 4. Implement the value betting logic
+        backtest_df['implied_proba'] = 1 / backtest_df['odds']
+        value_bets = backtest_df[backtest_df['predicted_proba'] > backtest_df['implied_proba']].copy()
 
-        # Actual outcomes for the bets
-        actual_outcomes = test_df.loc[bets_indices, feature]
-        wins = actual_outcomes == 1
-        losses = actual_outcomes == 0
-
-        num_bets = len(odds_for_bets)
-        num_wins = wins.sum()
-        num_losses = losses.sum()
-
-        # Profit calculation: sum of (odds - 1) for wins minus losses
-        win_odds = odds_for_bets[wins]
-        total_profit = (win_odds - 1).sum() - num_losses
-        roi = (total_profit / num_bets) * 100 if num_bets > 0 else 0
-        avg_odds = odds_for_bets.mean()
-
-        profit_report.append({
-            'Feature': feature,
-            'Precision': precision,
-            'Simulated_Bets': num_bets,
-            'Avg_Odds_On_Win': f"{avg_odds:.2f}",
-            'Est_Profit': f"{total_profit:.2f}",
-            'Est_ROI_%': f"{roi:.2f}",
-            'Required_Odds_for_Profit': f"{1/precision:.2f}" if precision > 0 else 'N/A'
-        })
-    else:
-        # No mapping: just required odds
-        profit_report.append({
-            'Feature': feature,
-            'Precision': precision,
-            'Simulated_Bets': 'N/A (no odds mapping)',
-            'Avg_Odds_On_Win': 'N/A',
-            'Est_Profit': 'N/A',
-            'Est_ROI_%': 'N/A',
-            'Required_Odds_for_Profit': f"{1/precision:.2f}" if precision > 0 else 'N/A'
-        })
+        if not value_bets.empty:
+            # 5. Calculate profit and ROI on the value bets
+            num_bets = len(value_bets)
+            
+            # Calculate profit for each bet
+            # Profit is (odds - 1) for a win, -1 for a loss
+            value_bets['profit'] = np.where(value_bets['true_label'] == 1, value_bets['odds'] - 1, -1)
+            
+            total_profit = value_bets['profit'].sum()
+            roi = (total_profit / num_bets) * 100
+            
+            # 6. Gather metrics for the report
+            win_rate = value_bets['true_label'].mean()
+            avg_odds_bet = value_bets['odds'].mean()
+            avg_required_odds = 1 / value_bets['predicted_proba'].mean()
+            
+            profit_report.append({
+                'Feature': feature,
+                'Value_Bets_Found': num_bets,
+                'Win_Rate_on_Value_Bets': f"{win_rate:.2%}",
+                'Avg_Odds_Bet': f"{avg_odds_bet:.2f}",
+                'Total_Profit': f"{total_profit:.2f}",
+                'ROI_%': f"{roi:.2f}",
+                'Avg_Required_Odds_for_Value': f"{avg_required_odds:.2f}"
+            })
+            # Note: Only report features that have actual value bets to focus on actionable insights
 
 # --- 4. Display and Save Report ---
 if profit_report:
     report_df = pd.DataFrame(profit_report)
-    print("\n--- Profitability Simulation Report ---")
+    print("\n--- Value Betting Backtest Report ---")
     print(report_df.to_string())
-    report_df.to_csv('/Users/batumbp/Files/betting/_DENEME2/results/profit_report.csv', index=False)
+    report_df.to_csv('/Users/batumbp/Files/betting/_DENEME2/results/profit_report_value_betting.csv', index=False)
 else:
     print("\nCould not generate profitability report. Check mappings and odds columns.")
